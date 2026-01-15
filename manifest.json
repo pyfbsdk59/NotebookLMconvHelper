@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "NotebookLM File Assistant",
+  "version": "1.0",
+  "description": "檢查檔案大小並呼叫本機 Python 轉檔工具",
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://notebooklm.google.com/*"],
+      "js": ["content.js"],
+      "css": ["style.css"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
