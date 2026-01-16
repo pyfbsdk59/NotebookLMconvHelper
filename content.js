@@ -1,11 +1,11 @@
 // content.js
 
 // ============================================================================
-// 【已整合】您的 Google Drive 直連下載連結
-const ZIP_DOWNLOAD_URL = "https://drive.google.com/uc?export=download&id=1Jix19WKE3ZhibWlOkkoySKIE-Ot_BJq9"; 
+// 【MediaFire 下載連結】
+const ZIP_DOWNLOAD_URL = "https://www.mediafire.com/file/ztnqcm5d3e5ha7e/extensionConv.zip/file"; 
 // ============================================================================
 
-// 1. 建立介面元素 (保持不變)
+// 1. 建立介面元素
 const floatBtn = document.createElement('button');
 floatBtn.innerText = "📂 檢查檔案";
 floatBtn.id = "nlm-helper-btn";
@@ -21,7 +21,7 @@ panel.innerHTML = `
     <div id="nlm-status" style="font-size:13px; margin-bottom:10px; min-height:20px;"></div>
     
     <button id="nlm-launch-py" style="display:none; width:100%; background:#1a73e8; color:white; border:none; padding:8px; border-radius:4px; cursor:pointer; margin-bottom:10px;">
-        🚀 啟動 Python 轉檔器
+        🚀 啟動轉檔器
     </button>
     
     <hr style="border:0; border-top:1px solid #eee; margin:10px 0;">
@@ -44,7 +44,7 @@ panel.innerHTML = `
 `;
 document.body.appendChild(panel);
 
-// 2. 介面互動邏輯 (保持不變)
+// 2. 介面互動邏輯
 floatBtn.addEventListener('click', () => {
     panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
 });
@@ -78,7 +78,6 @@ fileInput.addEventListener('change', (e) => {
     }
 });
 
-// 3. 啟動按鈕
 launchBtn.addEventListener('click', () => {
     try {
         chrome.runtime.sendMessage({ action: "launch_converter" }, (response) => {
@@ -97,83 +96,178 @@ launchBtn.addEventListener('click', () => {
     }
 });
 
-// 4. 動態生成並下載 BAT 腳本 (修正崩潰問題版)
+// ----------------------------------------------------------------------
+// Base64 編碼函式
+function convertToPsBase64(str) {
+    let utf16le = new Uint8Array(str.length * 2);
+    for (let i = 0; i < str.length; i++) {
+        let code = str.charCodeAt(i);
+        utf16le[i * 2] = code & 0xff;
+        utf16le[i * 2 + 1] = (code >> 8) & 0xff;
+    }
+    let binStr = "";
+    for (let i = 0; i < utf16le.length; i++) {
+        binStr += String.fromCharCode(utf16le[i]);
+    }
+    return btoa(binStr);
+}
+
+// 4. 下載功能：MediaFire + Session + 自動產生 Launcher.bat
 downloadSetupBtn.addEventListener('click', () => {
     const extId = chrome.runtime.id; 
+    
+    // PowerShell 腳本
+    const psScript = `
+$ErrorActionPreference = 'Stop'
+Write-Host "Starting NotebookLM Converter Installer..." -ForegroundColor Cyan
 
-    const batContent = `@echo off
-chcp 65001 >nul
-title NotebookLM Converter Installer
-echo ========================================================
-echo   NotebookLM 輸入格式適合轉換器 - 自動安裝程式
-echo ========================================================
-echo.
+# 1. 參數設定
+$url = "${ZIP_DOWNLOAD_URL}"
+$folder = "C:\\extensionConv"
+$zipPath = "$folder\\extensionConv.zip"
+$manifestPath = "$folder\\host_manifest.json"
+$launcherPath = "$folder\\launcher.bat"
 
-:: 1. 檢查管理員權限
-net session >nul 2>&1
-if %errorLevel% == 0 (
-    echo [OK] 已取得系統管理員權限...
-) else (
-    echo [ERROR] 權限不足！
-    echo 請對此檔案按右鍵，選擇「以系統管理員身分執行」。
-    echo.
-    pause
-    exit
-)
+# 2. 建立資料夾
+if (!(Test-Path $folder)) { 
+    New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    Write-Host "[OK] Directory created." 
+}
 
-:: 2. 建立目標資料夾
-set "TARGET_DIR=C:\\extensionConv"
-if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
-echo [OK] 資料夾準備完成。
+# 3. 安全性協定
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-:: 3. 下載 ZIP 檔案
-echo [INFO] 正在下載工具包，請稍候...
-:: 【修正點】這裡加上了雙引號，避免網址中的 & 符號導致腳本崩潰
-echo 來源: "${ZIP_DOWNLOAD_URL}"
+# -----------------------------------------------------------
+# 失敗救援函式
+# -----------------------------------------------------------
+function Trigger-ManualFallback {
+    param($reason)
+    Write-Host ""
+    Write-Host "========================================================" -ForegroundColor Yellow
+    Write-Host " AUTOMATIC DOWNLOAD FAILED ($reason)" -ForegroundColor Yellow
+    Write-Host "========================================================" -ForegroundColor Yellow
+    Write-Host "Opening browser for manual download..." -ForegroundColor Cyan
+    Start-Sleep -Seconds 2
+    Start-Process "${ZIP_DOWNLOAD_URL}"
+    Write-Host "Please save ZIP to C:\\extensionConv\\extensionConv.zip and press Enter."
+    Read-Host
+    try { Expand-Archive -Path $zipPath -DestinationPath $folder -Force; Write-Host "[OK] Unzip success!" -ForegroundColor Green } catch { exit 1 }
+}
 
-powershell -Command "Invoke-WebRequest -Uri '${ZIP_DOWNLOAD_URL}' -OutFile '%TARGET_DIR%\\extensionConv.zip'"
+# 4. 下載邏輯
+Write-Host "[INFO] Connecting to MediaFire..."
+try {
+    # 建立 Session
+    $req = Invoke-WebRequest -Uri $url -SessionVariable mfSession -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/537.36"
+    $htmlContent = $req.Content
 
-if not exist "%TARGET_DIR%\\extensionConv.zip" (
-    echo.
-    echo [ERROR] 下載失敗！檔案未建立。
-    echo 請檢查網路連線，或手動下載檔案。
-    pause
-    exit
-)
+    Write-Host "[INFO] Parsing download link..."
+    $realUrl = $null
+    if ($htmlContent -match 'id="downloadButton".*?href="([^"]+)"') { $realUrl = $matches[1] }
+    elseif ($htmlContent -match 'aria-label="Download file".*?href="([^"]+)"') { $realUrl = $matches[1] }
+    elseif ($htmlContent -match 'href="(https://download[^"]+)"') { $realUrl = $matches[1] }
 
-:: 4. 解壓縮 (Force代表強制覆蓋)
-echo [INFO] 正在解壓縮與覆蓋舊檔...
-powershell -Command "Expand-Archive -Path '%TARGET_DIR%\\extensionConv.zip' -DestinationPath '%TARGET_DIR%' -Force"
+    if ([string]::IsNullOrEmpty($realUrl)) {
+        Trigger-ManualFallback "Could not find direct download link on page."
+    } else {
+        Write-Host "[INFO] Link Found! Downloading..."
+        Invoke-WebRequest -Uri $realUrl -WebSession $mfSession -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -OutFile $zipPath
 
-:: 5. 注入 Chrome Extension ID
-(
-echo {
-echo   "name": "com.yourname.nlmconverter",
-echo   "description": "NotebookLM Converter Launcher",
-echo   "path": "launcher.bat",
-echo   "type": "stdio",
-echo   "allowed_origins": [
-echo     "chrome-extension://${extId}/"
-echo   ]
-echo }
-) > "%TARGET_DIR%\\host_manifest.json"
-echo [OK] 設定檔 ID 已修正為: ${extId}
+        $fileSize = (Get-Item $zipPath).Length
+        if ($fileSize -lt 10000) {
+            Trigger-ManualFallback "File too small ($fileSize bytes)."
+        } else {
+            Write-Host "[OK] Download success." -ForegroundColor Green
+        }
+    }
+} catch {
+    Trigger-ManualFallback "Error: $_"
+}
 
-:: 6. 寫入 Registry
-reg add "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.yourname.nlmconverter" /ve /t REG_SZ /d "%TARGET_DIR%\\host_manifest.json" /f >nul
-echo [OK] 系統註冊完成。
+# 5. 解壓縮 & 智慧路徑整平
+Write-Host "[INFO] Unzipping..."
+try {
+    # 清理舊檔
+    Get-ChildItem -Path $folder -Exclude "extensionConv.zip" | Remove-Item -Recurse -Force
 
-:: 7. 清理
-del "%TARGET_DIR%\\extensionConv.zip"
+    Expand-Archive -Path $zipPath -DestinationPath $folder -Force
+    
+    # 智慧整平
+    $items = Get-ChildItem -Path $folder -Exclude "extensionConv.zip"
+    $dirCount = ($items | Where-Object { $_.PSIsContainer }).Count
+    $fileCount = ($items | Where-Object { -not $_.PSIsContainer }).Count
 
-echo.
-echo ========================================================
-echo      安裝成功！您現在可以回到網頁使用轉檔按鈕了。
-echo ========================================================
-pause
+    if ($dirCount -eq 1 -and $fileCount -eq 0) {
+        $nestedDir = $items[0].FullName
+        Write-Host "[INFO] Flattening directory structure..."
+        Get-ChildItem -Path $nestedDir | Move-Item -Destination $folder -Force
+        Remove-Item $nestedDir -Force
+        Write-Host "[OK] Structure flattened." -ForegroundColor Green
+    }
+    Write-Host "[OK] Unzip success." -ForegroundColor Green
+} catch {
+    Trigger-ManualFallback "File is not a valid ZIP."
+}
+
+# 6. 【關鍵修正】建立 launcher.bat
+# 這一步確保即使 ZIP 裡面沒有 bat 檔，我們也會自動產生一個
+Write-Host "[INFO] Creating Launcher..."
+$batContent = '@echo off' + [Environment]::NewLine + '"%~dp0notebooklmConv.exe" %*'
+Set-Content -Path $launcherPath -Value $batContent -Encoding ASCII
+Write-Host "[OK] Launcher created." -ForegroundColor Green
+
+
+# 7. 建立 Manifest
+Write-Host "[INFO] Configuring extension ID..."
+$jsonContent = '{"name":"com.yourname.nlmconverter","description":"NotebookLM Converter Launcher","path":"launcher.bat","type":"stdio","allowed_origins":["chrome-extension://${extId}/"]}'
+Set-Content -Path $manifestPath -Value $jsonContent -Encoding UTF8
+
+# 8. 註冊登錄檔
+Write-Host "[INFO] Updating Registry..."
+reg add "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.yourname.nlmconverter" /ve /t REG_SZ /d $manifestPath /f | Out-Null
+
+# 9. 清理
+Remove-Item $zipPath -ErrorAction SilentlyContinue
+
+Write-Host "---------------------------------------"
+Write-Host "   INSTALLATION SUCCESSFUL!            " -ForegroundColor Green
+Write-Host "---------------------------------------"
+Write-Host "You can now verify the extension."
+Start-Sleep -Seconds 3
 `;
 
-    // 觸發下載
+    const encodedCommand = convertToPsBase64(psScript);
+
+    const batContent = `@echo off
+title NotebookLM Installer
+echo ========================================================
+echo   NotebookLM Converter Auto-Installer
+echo ========================================================
+echo.
+
+:: Check Admin
+net session >nul 2>&1
+if %errorLevel% NEQ 0 (
+    echo [ERROR] Admin rights required.
+    echo Please Right-Click -> Run as Administrator.
+    pause
+    exit
+)
+
+echo [INFO] Executing installation script...
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}
+
+if %errorLevel% NEQ 0 (
+    echo.
+    echo [ERROR] Installation failed.
+    pause
+) else (
+    echo.
+    echo [OK] Done. Closing in 3 seconds...
+    timeout /t 3 >nul
+)
+`;
+
     const blob = new Blob([batContent], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
